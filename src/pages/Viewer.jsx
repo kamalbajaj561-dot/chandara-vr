@@ -12,7 +12,6 @@ const RemoteParticipantVideo = ({ participant, videoTrack, audioTrack, room }) =
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [audioEnabled, setAudioEnabled] = useState(false);
   const [audioError, setAudioError] = useState(null);
-  const [audioAttached, setAudioAttached] = useState(false);
 
   const toggleFullscreen = () => {
     if (!containerRef.current) return;
@@ -33,59 +32,22 @@ const RemoteParticipantVideo = ({ participant, videoTrack, audioTrack, room }) =
   };
 
   const enableAudio = async () => {
-    console.log('>>> React: enableAudio() called');
-    console.log('>>> React: room exists:', !!room);
-    console.log('>>> React: room.canPlaybackAudio:', room?.canPlaybackAudio);
-    console.log('>>> React: audioRef.current:', audioRef.current);
-    
     try {
-      if (room) {
-        await room.startAudio();
-        console.log('>>> React: room.startAudio() succeeded');
-        
-        // Try to play the audio element directly
-        if (audioRef.current) {
-          console.log('>>> React: Audio element state before play():');
-          console.log('  muted:', audioRef.current.muted);
-          console.log('  volume:', audioRef.current.volume);
-          console.log('  readyState:', audioRef.current.readyState);
-          console.log('  paused:', audioRef.current.paused);
-          
-          // Ensure element is not already playing
-          if (!audioRef.current.paused) {
-            console.log('>>> React: Audio already playing');
-            setAudioEnabled(true);
-            setAudioError(null);
-            return;
-          }
-          
-          audioRef.current.play().then(() => {
-            console.log('>>> React: Audio element play() succeeded');
-            setAudioEnabled(true);
-            setAudioError(null);
-          }).catch((err) => {
-            console.error('>>> React: Audio element play() failed:', err);
-            console.error('>>> React: Error name:', err.name);
-            console.error('>>> React: Error message:', err.message);
-            
-            if (err.name === 'AbortError') {
-              setAudioError('Play interrupted by cleanup');
-            } else if (err.name === 'NotAllowedError') {
-              setAudioError('Autoplay blocked - click again');
-            } else {
-              setAudioError(`${err.name}: ${err.message}`);
-            }
-          });
-        } else {
-          console.error('>>> React: audioRef.current is null');
-          setAudioError('Audio element not found');
-        }
+      if (room) await room.startAudio();
+      const el = audioRef.current;
+      if (!el) {
+        setAudioError('Audio element not found');
+        return;
       }
+      el.muted = false;
+      await el.play();
+      setAudioEnabled(true);
+      setAudioError(null);
     } catch (err) {
-      console.error('>>> React: room.startAudio() failed:', err);
-      console.error('>>> React: Error name:', err.name);
-      console.error('>>> React: Error message:', err.message);
-      setAudioError(`${err.name}: ${err.message}`);
+      if (err.name === 'AbortError') return; // superseded by a track change; not an error
+      setAudioError(err.name === 'NotAllowedError'
+        ? 'Browser blocked audio - click Enable Audio again'
+        : `${err.name}: ${err.message}`);
     }
   };
 
@@ -117,54 +79,39 @@ const RemoteParticipantVideo = ({ participant, videoTrack, audioTrack, room }) =
     }
   }, [videoTrack]);
 
-  // Attach audio track when element mounts - only once
+  // Attach remote audio. Depends ONLY on audioTrack: putting state such as
+  // "audioAttached" in the deps made React run the cleanup right after attaching
+  // (detach + pause), which caused "AbortError: play() request was interrupted".
   useEffect(() => {
-    if (audioTrack && audioRef.current && !audioAttached) {
-      console.log('>>> React: Attaching audio track to ref (first time)');
-      console.log('>>> React: audioRef.current:', audioRef.current);
-      console.log('>>> React: Audio track properties:');
-      console.log('  track kind:', audioTrack.kind);
-      console.log('  track enabled:', audioTrack.enabled);
-      console.log('  track muted:', audioTrack.muted);
-      console.log('  track readyState:', audioTrack.readyState);
-      
-      audioTrack.attach(audioRef.current);
-      console.log('>>> React: Audio track attached, attachedElements:', audioTrack.attachedElements?.length);
-      setAudioAttached(true);
-      
-      // Configure audio element
-      const audioEl = audioRef.current;
-      audioEl.muted = false;
-      audioEl.volume = 1.0;
-      audioEl.autoplay = false; // Don't autoplay, wait for user gesture
-      
-      console.log('>>> React: Audio element configured:');
-      console.log('  muted:', audioEl.muted);
-      console.log('  volume:', audioEl.volume);
-      console.log('  autoplay:', audioEl.autoplay);
-      
-      // Check WebRTC stats after a delay
-      setTimeout(() => {
-        if (room) {
-          room.getStats().then((stats) => {
-            console.log('>>> React: WebRTC stats for audio:');
-            console.log('  Stats:', stats);
-          }).catch((err) => {
-            console.error('>>> React: Failed to get stats:', err);
-          });
-        }
-      }, 2000);
-      
-      return () => {
-        console.log('>>> React: Cleanup: Detaching audio track');
-        audioTrack.detach();
-        audioEl.pause();
-        audioEl.currentTime = 0;
-        setAudioAttached(false);
-        setAudioEnabled(false);
-      };
-    }
-  }, [audioTrack, audioAttached]);
+    const audioEl = audioRef.current;
+    if (!audioTrack || !audioEl) return undefined;
+
+    audioTrack.attach(audioEl);
+    audioEl.muted = false;
+    audioEl.volume = 1.0;
+    setAudioError(null);
+
+    // Try to start playback; browsers may block this until a user gesture.
+    audioEl.play().then(() => setAudioEnabled(true)).catch((err) => {
+      if (err.name !== 'AbortError') setAudioEnabled(false);
+    });
+
+    return () => {
+      audioTrack.detach(audioEl);
+      audioEl.srcObject = null;
+      setAudioEnabled(false);
+    };
+  }, [audioTrack]);
+
+  // Reflect LiveKit's autoplay-blocked state
+  useEffect(() => {
+    if (!room) return undefined;
+    const onStatus = () => {
+      if (room.canPlaybackAudio) setAudioError(null);
+    };
+    room.on(RoomEvent.AudioPlaybackStatusChanged, onStatus);
+    return () => room.off(RoomEvent.AudioPlaybackStatusChanged, onStatus);
+  }, [room]);
 
   return (
     <div className="card">
@@ -199,7 +146,7 @@ const RemoteParticipantVideo = ({ participant, videoTrack, audioTrack, room }) =
           </button>
         )}
       </div>
-      <audio ref={audioRef} autoPlay />
+      <audio ref={audioRef} playsInline />
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-white font-semibold">{participant.name}</h3>

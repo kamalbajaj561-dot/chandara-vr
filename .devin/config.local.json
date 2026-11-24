@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Exec(tasklist)",
-      "Exec(docker exec)",
-      "Exec(npm run)"
-    ]
-  }
-}

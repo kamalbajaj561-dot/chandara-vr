@@ -8,7 +8,9 @@ service cloud.firestore {
         (request.auth.uid == userId || 
          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin');
       
-      allow create: if request.auth != null && request.auth.uid == userId;
+      // New accounts may only be created with the default role; promotion is admin-only.
+      allow create: if request.auth != null && request.auth.uid == userId &&
+        request.resource.data.role == 'user';
       
       allow update: if request.auth != null && 
         (request.auth.uid == userId || 

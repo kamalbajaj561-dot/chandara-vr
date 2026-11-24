@@ -40,3 +40,7 @@ ui-debug.log
 
 # Build
 build
+
+.devin/
+!.env.example
+.env.*

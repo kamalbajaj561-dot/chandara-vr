@@ -19,7 +19,11 @@ const Publisher = () => {
   const [status, setStatus] = useState('Disconnected');
   
   const videoElementRef = useRef(null);
-  const audioElementRef = useRef(null);
+  const localTracksRef = useRef({ video: null, audio: null });
+  const [cameras, setCameras] = useState([]);
+  const [microphones, setMicrophones] = useState([]);
+  const [cameraId, setCameraId] = useState('');
+  const [micId, setMicId] = useState('');
 
   const roomName = eventId || `test-room-${Date.now()}`;
   const participantName = `publisher-${Date.now()}`;
@@ -117,6 +121,71 @@ const Publisher = () => {
     }
   };
 
+  const describeMediaError = (err) => {
+    switch (err?.name) {
+      case 'NotAllowedError':
+      case 'PermissionDeniedError':
+        return 'Camera/microphone permission was denied. Allow access in your browser settings and try again.';
+      case 'NotFoundError':
+      case 'DevicesNotFoundError':
+        return 'No camera or microphone was found. Connect a device and try again.';
+      case 'NotReadableError':
+      case 'TrackStartError':
+        return 'Your camera or microphone is in use by another application.';
+      case 'OverconstrainedError':
+        return 'The selected device is unavailable. Choose another device.';
+      default:
+        return err?.message || 'Could not access camera or microphone.';
+    }
+  };
+
+  const refreshDevices = async () => {
+    try {
+      const [cams, mics] = await Promise.all([
+        Room.getLocalDevices('videoinput'),
+        Room.getLocalDevices('audioinput'),
+      ]);
+      setCameras(cams);
+      setMicrophones(mics);
+      setCameraId((cur) => cur || cams[0]?.deviceId || '');
+      setMicId((cur) => cur || mics[0]?.deviceId || '');
+    } catch (e) {
+      console.warn('Could not list media devices:', e);
+    }
+  };
+
+  useEffect(() => {
+    refreshDevices();
+    navigator.mediaDevices?.addEventListener?.('devicechange', refreshDevices);
+    return () => navigator.mediaDevices?.removeEventListener?.('devicechange', refreshDevices);
+  }, []);
+
+  // Release camera/mic if the tab is closed or reloaded mid-broadcast.
+  useEffect(() => {
+    const onUnload = () => {
+      const { video, audio } = localTracksRef.current;
+      video?.stop();
+      audio?.stop();
+      room?.disconnect();
+    };
+    window.addEventListener('pagehide', onUnload);
+    return () => window.removeEventListener('pagehide', onUnload);
+  }, [room]);
+
+  const toggleMicrophone = async () => {
+    const track = localTracksRef.current.audio;
+    if (!track) return;
+    if (microphoneEnabled) await track.mute(); else await track.unmute();
+    setMicrophoneEnabled(!microphoneEnabled);
+  };
+
+  const toggleCamera = async () => {
+    const track = localTracksRef.current.video;
+    if (!track) return;
+    if (cameraEnabled) await track.mute(); else await track.unmute();
+    setCameraEnabled(!cameraEnabled);
+  };
+
   const startCameraAndMicrophone = async () => {
     if (!room) return;
 
@@ -124,8 +193,9 @@ const Publisher = () => {
       setStatus('Requesting permissions...');
       
       // LiveKit client v2 API: create local tracks with audio processing
-      const videoTrack = await createLocalVideoTrack();
+      const videoTrack = await createLocalVideoTrack(cameraId ? { deviceId: { exact: cameraId } } : undefined);
       const audioTrack = await createLocalAudioTrack({
+        deviceId: micId ? { exact: micId } : undefined,
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true,
@@ -139,6 +209,7 @@ const Publisher = () => {
       setStatus('Publishing tracks...');
       
       // Publish tracks to room
+      localTracksRef.current = { video: videoTrack, audio: audioTrack };
       const videoPublication = await room.localParticipant.publishTrack(videoTrack);
       const audioPublication = await room.localParticipant.publishTrack(audioTrack);
       
@@ -151,22 +222,34 @@ const Publisher = () => {
       });
       
       setIsPublishing(true);
+      setCameraEnabled(true);
+      setMicrophoneEnabled(true);
       setStatus('Publishing');
+      refreshDevices();
 
       // Attach local video track to preview element
       if (videoElementRef.current) {
         videoTrack.attach(videoElementRef.current);
       }
       
-      // Attach local audio track (for monitoring, muted to prevent echo)
-      if (audioElementRef.current) {
-        audioTrack.attach(audioElementRef.current);
-        audioElementRef.current.muted = true; // Mute local preview to prevent echo
-      }
+      // IMPORTANT: never attach the local microphone track to an <audio> element.
+      // Playing your own mic through the speakers causes acoustic feedback (echo).
     } catch (err) {
       console.error('Media capture error:', err);
-      setError(err.message);
+      await releaseLocalTracks();
+      setError(describeMediaError(err));
       setStatus('Media Capture Failed');
+    }
+  };
+
+  // Unpublish and fully stop local tracks so the camera/mic hardware is released.
+  const releaseLocalTracks = async () => {
+    const { video, audio } = localTracksRef.current;
+    localTracksRef.current = { video: null, audio: null };
+    for (const t of [video, audio]) {
+      if (!t) continue;
+      try { await room?.localParticipant.unpublishTrack(t, true); } catch (e) { /* already gone */ }
+      try { t.detach(); t.stop(); } catch (e) { /* already stopped */ }
     }
   };
 
@@ -174,9 +257,7 @@ const Publisher = () => {
     if (!room) return;
 
     try {
-      // LiveKit client v2 API: disable camera and microphone
-      await room.localParticipant.setCameraEnabled(false);
-      await room.localParticipant.setMicrophoneEnabled(false);
+      await releaseLocalTracks();
 
       setIsPublishing(false);
       setCameraEnabled(false);
@@ -195,9 +276,7 @@ const Publisher = () => {
 
   const cleanup = async () => {
     if (room) {
-      // Stop publishing before disconnecting
-      await room.localParticipant.setCameraEnabled(false);
-      await room.localParticipant.setMicrophoneEnabled(false);
+      await releaseLocalTracks();
       await room.disconnect();
       setRoom(null);
     }
@@ -295,7 +374,37 @@ const Publisher = () => {
             )}
           </div>
 
-          <audio ref={audioElementRef} autoPlay playsInline />
+          {/* Device selection */}
+          {isConnected && !isPublishing && (
+            <div className="grid sm:grid-cols-2 gap-4 mb-4">
+              <label className="text-sm text-gray-300">
+                Camera
+                <select
+                  value={cameraId}
+                  onChange={(e) => setCameraId(e.target.value)}
+                  className="mt-1 w-full bg-gray-800 text-white rounded-lg px-3 py-2"
+                >
+                  {cameras.length === 0 && <option value="">No camera found</option>}
+                  {cameras.map((d, i) => (
+                    <option key={d.deviceId} value={d.deviceId}>{d.label || `Camera ${i + 1}`}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-sm text-gray-300">
+                Microphone
+                <select
+                  value={micId}
+                  onChange={(e) => setMicId(e.target.value)}
+                  className="mt-1 w-full bg-gray-800 text-white rounded-lg px-3 py-2"
+                >
+                  {microphones.length === 0 && <option value="">No microphone found</option>}
+                  {microphones.map((d, i) => (
+                    <option key={d.deviceId} value={d.deviceId}>{d.label || `Microphone ${i + 1}`}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          )}
 
           {/* Controls */}
           <div className="flex gap-4 mb-4">
@@ -334,18 +443,18 @@ const Publisher = () => {
 
           {/* Track Status */}
           <div className="flex gap-4">
-            <div className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
+            <button type="button" onClick={toggleCamera} disabled={!isPublishing} aria-pressed={cameraEnabled} className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
               cameraEnabled ? 'bg-green-600/20 text-green-400 border border-green-600' : 'bg-gray-700/30 text-gray-400 border border-gray-600'
             }`}>
               <Camera className="w-4 h-4" />
               <span>Camera {cameraEnabled ? 'On' : 'Off'}</span>
-            </div>
-            <div className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
+            </button>
+            <button type="button" onClick={toggleMicrophone} disabled={!isPublishing} aria-pressed={microphoneEnabled} className={`flex items-center gap-2 px-4 py-2 rounded-lg ${
               microphoneEnabled ? 'bg-green-600/20 text-green-400 border border-green-600' : 'bg-gray-700/30 text-gray-400 border border-gray-600'
             }`}>
               <Mic className="w-4 h-4" />
               <span>Microphone {microphoneEnabled ? 'On' : 'Off'}</span>
-            </div>
+            </button>
           </div>
         </div>
 
