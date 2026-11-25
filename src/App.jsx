@@ -13,6 +13,9 @@ import VRViewer from './pages/VRViewer';
 import AdminDashboard from './pages/AdminDashboard';
 import Publisher from './pages/Publisher';
 import Viewer from './pages/Viewer';
+import ForgotPassword from './pages/ForgotPassword';
+import Events from './pages/Events';
+import Profile from './pages/Profile';
 
 // Protected Route Component
 const ProtectedRoute = ({ children, requiredRole = null }) => {
@@ -146,7 +149,9 @@ function AppRoutes() {
       <Route path="/viewer/:eventId" element={<Viewer />} />
 
       {/* Events listing */}
-      <Route path="/events" element={<><Navbar /><Home /></>} />
+      <Route path="/events" element={<><Navbar /><Events /></>} />
+      <Route path="/forgot-password" element={<PublicRoute><ForgotPassword /></PublicRoute>} />
+      <Route path="/profile" element={<ProtectedRoute><Navbar /><Profile /></ProtectedRoute>} />
 
       {/* Catch all - redirect to home */}
       <Route path="*" element={<Navigate to="/" replace />} />

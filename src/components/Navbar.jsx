@@ -33,6 +33,9 @@ const Navbar = () => {
                 >
                   Dashboard
                 </Link>
+                <Link to="/profile" className="text-gray-300 hover:text-gold transition-colors">
+                  Profile
+                </Link>
                 {user.role === 'streamer' && (
                   <Link to="/create-event" className="text-gray-300 hover:text-gold transition-colors">
                     Create Event

@@ -92,6 +92,11 @@ const Login = () => {
                 placeholder="Enter your password"
               />
               {errors.password && <p className="text-red-400 text-sm mt-1">{errors.password}</p>}
+              <div className="text-right mt-2">
+                <Link to="/forgot-password" className="text-sm text-gold hover:text-goldLight">
+                  Forgot password?
+                </Link>
+              </div>
             </div>
 
             <button
