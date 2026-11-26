@@ -1,5 +1,6 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import { AuthProvider, useAuth } from './context/AuthContext';
+import { AuthProvider } from './context/AuthContext';
+import { ProtectedRoute, PublicRoute } from './components/RouteGuards';
 import Navbar from './components/Navbar';
 import Home from './pages/Home';
 import Register from './pages/Register';
@@ -16,54 +17,8 @@ import Viewer from './pages/Viewer';
 import ForgotPassword from './pages/ForgotPassword';
 import Events from './pages/Events';
 import Profile from './pages/Profile';
-
-// Protected Route Component
-const ProtectedRoute = ({ children, requiredRole = null }) => {
-  const { user, loading } = useAuth();
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-darkerBlue flex items-center justify-center">
-        <div className="text-white">Loading...</div>
-      </div>
-    );
-  }
-
-  if (!user) {
-    return <Navigate to="/login" replace />;
-  }
-
-  if (requiredRole && user.role !== requiredRole) {
-    return <Navigate to="/" replace />;
-  }
-
-  return children;
-};
-
-// Public Route (redirect if already logged in)
-const PublicRoute = ({ children }) => {
-  const { user, loading } = useAuth();
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-darkerBlue flex items-center justify-center">
-        <div className="text-white">Loading...</div>
-      </div>
-    );
-  }
-
-  if (user) {
-    if (user.role === 'admin') {
-      return <Navigate to="/admin" replace />;
-    } else if (user.role === 'streamer') {
-      return <Navigate to="/streamer-dashboard" replace />;
-    } else {
-      return <Navigate to="/dashboard" replace />;
-    }
-  }
-
-  return children;
-};
+import Orders from './pages/Orders';
+import CheckoutStatus from './pages/CheckoutStatus';
 
 function AppRoutes() {
   return (
@@ -151,6 +106,8 @@ function AppRoutes() {
       {/* Events listing */}
       <Route path="/events" element={<><Navbar /><Events /></>} />
       <Route path="/forgot-password" element={<PublicRoute><ForgotPassword /></PublicRoute>} />
+      <Route path="/orders" element={<ProtectedRoute><Navbar /><Orders /></ProtectedRoute>} />
+      <Route path="/checkout/status" element={<ProtectedRoute><Navbar /><CheckoutStatus /></ProtectedRoute>} />
       <Route path="/profile" element={<ProtectedRoute><Navbar /><Profile /></ProtectedRoute>} />
 
       {/* Catch all - redirect to home */}

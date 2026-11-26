@@ -33,6 +33,9 @@ const Navbar = () => {
                 >
                   Dashboard
                 </Link>
+                <Link to="/orders" className="text-gray-300 hover:text-gold transition-colors">
+                  Orders
+                </Link>
                 <Link to="/profile" className="text-gray-300 hover:text-gold transition-colors">
                   Profile
                 </Link>

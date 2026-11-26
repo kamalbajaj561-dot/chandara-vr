@@ -58,13 +58,13 @@ service cloud.firestore {
       // Users can read their own tickets
       allow read: if request.auth != null && 
         (request.auth.uid == resource.data.buyerId ||
+         request.auth.uid == resource.data.userId ||
          request.auth.uid == get(/databases/$(database)/documents/events/$(resource.data.eventId)).data.ownerId ||
          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin');
       
-      // Users can create tickets for themselves
-      allow create: if request.auth != null && 
-        request.resource.data.buyerId == request.auth.uid &&
-        request.resource.data.amount > 0;
+      // Tickets are issued ONLY by the backend (Admin SDK) after a verified payment.
+      // Clients must never create them: the backend treats a stored ticket as proof of payment.
+      allow create: if false;
       
       // No updates or deletes allowed for tickets
       allow update: if false;

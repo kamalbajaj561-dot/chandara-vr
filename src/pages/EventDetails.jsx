@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { getEvent } from '../services/eventService';
-import { purchaseTicket, hasPurchasedTicket } from '../services/ticketService';
+import { getMyTickets } from '../services/checkoutService';
+import CheckoutPanel from '../components/CheckoutPanel';
 import { getUser } from '../services/userService';
 import { Calendar, MapPin, Camera, DollarSign, Play, User as UserIcon } from 'lucide-react';
 import { formatCurrency, formatDateTime } from '../utils/formatDate';
@@ -15,7 +16,6 @@ const EventDetails = () => {
   const [streamer, setStreamer] = useState(null);
   const [hasPurchased, setHasPurchased] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [purchasing, setPurchasing] = useState(false);
 
   useEffect(() => {
     loadEventData();
@@ -33,13 +33,8 @@ const EventDetails = () => {
           setStreamer(streamerResult.user);
         }
 
-        // Check if user has purchased ticket
-        if (user) {
-          const purchaseResult = await hasPurchasedTicket(id, user.uid);
-          if (purchaseResult.success) {
-            setHasPurchased(purchaseResult.hasPurchased);
-          }
-        }
+        // Entitlement comes from the backend (tickets are only issued after verified payment).
+        await refreshEntitlement(eventResult.event);
       }
       setLoading(false);
     } catch (error) {
@@ -48,23 +43,22 @@ const EventDetails = () => {
     }
   };
 
-  const handlePurchaseTicket = async () => {
-    if (!user) {
-      navigate('/login');
+  async function refreshEntitlement(ev = event) {
+    if (!ev) return;
+    if (!(Number(ev.ticketPrice) > 0)) {
+      setHasPurchased(true); // free event
       return;
     }
-
-    setPurchasing(true);
-    const result = await purchaseTicket(id, user.uid, event.ticketPrice);
-    
-    if (result.success) {
-      setHasPurchased(true);
-    } else {
-      alert('Failed to purchase ticket: ' + result.error);
+    if (!user) return;
+    try {
+      const tickets = await getMyTickets();
+      setHasPurchased(
+        (tickets || []).some((t) => t.eventId === id && (t.status === 'active' || t.status === 'used'))
+      );
+    } catch (e) {
+      console.warn('Could not check ticket status:', e.message);
     }
-    
-    setPurchasing(false);
-  };
+  }
 
   const handleWatch = () => {
     if (event.cameraType === '180vr' || event.cameraType === '360vr') {
@@ -210,7 +204,7 @@ const EventDetails = () => {
               
               <div className="text-center mb-6">
                 <p className="text-gray-400 mb-2">Ticket Price</p>
-                <p className="text-4xl font-bold text-gold">{formatCurrency(event.ticketPrice)}</p>
+                <p className="text-4xl font-bold text-gold">{Number(event.ticketPrice) > 0 ? formatCurrency(event.ticketPrice) : 'Free'}</p>
               </div>
 
               {hasPurchased ? (
@@ -222,13 +216,9 @@ const EventDetails = () => {
                   {isLive ? 'Watch Now' : 'Event Not Live Yet'}
                 </button>
               ) : (
-                <button
-                  onClick={handlePurchaseTicket}
-                  disabled={purchasing || !isApproved}
-                  className="btn-primary w-full disabled:opacity-50 disabled:cursor-not-allowed mb-4"
-                >
-                  {purchasing ? 'Processing...' : 'Buy Ticket'}
-                </button>
+                isApproved ? (
+                  <CheckoutPanel event={event} eventId={id} user={user} onPurchased={() => refreshEntitlement()} />
+                ) : null
               )}
 
               {!isApproved && (
