@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Room, RoomEvent, TrackType } from 'livekit-client';
+import { Room, RoomEvent, TrackType, DisconnectReason } from 'livekit-client';
 import { generateLiveKitToken, getLiveKitURL } from '../services/livekitService';
 import { Video, Users, Volume2, AlertCircle, Maximize, Minimize } from 'lucide-react';
 
@@ -193,15 +193,48 @@ const Viewer = () => {
   const [status, setStatus] = useState('Disconnected');
 
   const roomName = eventId || `test-room-${Date.now()}`;
-  const participantName = `viewer-${Date.now()}`;
+  const participantNameRef = useRef(`viewer-${Date.now()}`);
+  const participantName = participantNameRef.current;
+  const roomRef = useRef(null);
+  const mountedRef = useRef(true);
+  const retryRef = useRef({ count: 0, timer: null });
 
+  // Unmount: disconnect the room we actually hold (roomRef), not the stale first-render state value.
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
-      cleanup();
+      mountedRef.current = false;
+      clearTimeout(retryRef.current.timer);
+      const r = roomRef.current;
+      roomRef.current = null;
+      r?.removeAllListeners();
+      r?.disconnect();
     };
   }, []);
 
+  // Retry a lost connection a few times with backoff, fetching a fresh token each time.
+  const scheduleReconnect = () => {
+    const state = retryRef.current;
+    if (state.count >= 3) {
+      setStatus('Connection lost');
+      setError('Connection lost. Check your network and press Join to retry.');
+      return;
+    }
+    state.count += 1;
+    setStatus(`Reconnecting (attempt ${state.count}/3)...`);
+    clearTimeout(state.timer);
+    state.timer = setTimeout(() => {
+      if (mountedRef.current) connectToRoom();
+    }, 1000 * 2 ** state.count);
+  };
+
   const connectToRoom = async () => {
+    const previous = roomRef.current;
+    if (previous) {
+      roomRef.current = null;
+      previous.removeAllListeners();
+      await previous.disconnect();
+    }
     try {
       setStatus('Connecting...');
       setError(null);
@@ -213,10 +246,6 @@ const Viewer = () => {
       }
 
       const liveKitURL = tokenResult.url || getLiveKitURL();
-      console.log('=== Viewer Connection ===');
-      console.log('Room name (from state):', roomName);
-      console.log('Participant name (from state):', participantName);
-      console.log('Connecting to LiveKit at:', liveKitURL);
       
       // Create room with autoSubscribe enabled
       const newRoom = new Room({
@@ -225,43 +254,56 @@ const Viewer = () => {
       
       // Register event listeners BEFORE connecting
       newRoom.on(RoomEvent.Connected, () => {
-        console.log('=== Viewer Connected ===');
-        console.log('Room name (from room):', newRoom.name);
-        console.log('Local participant identity:', newRoom.localParticipant.identity);
-        console.log('Local participant name:', newRoom.localParticipant.name);
-        console.log('Remote participants:', newRoom.remoteParticipants.size);
-        newRoom.remoteParticipants.forEach((participant, identity) => {
-          console.log('Remote participant:', identity, 'name:', participant.name);
-          console.log('Track publications:', participant.trackPublications.size);
-          participant.trackPublications.forEach((pub, sid) => {
-            console.log('  Publication:', sid, 'kind:', pub.kind, 'trackSid:', pub.trackSid, 'subscribed:', pub.isSubscribed, 'track:', !!pub.track);
-          });
-        });
+        retryRef.current.count = 0;
         setIsConnected(true);
+        setError(null);
         setStatus('Connected');
         updateParticipantCount(newRoom);
         updateRemoteParticipants(newRoom);
       });
 
-      newRoom.on(RoomEvent.Disconnected, () => {
-        console.log('Viewer disconnected from room');
+      newRoom.on(RoomEvent.Reconnecting, () => {
+        setStatus('Reconnecting...');
+      });
+
+      newRoom.on(RoomEvent.Reconnected, () => {
+        setStatus('Connected');
+        updateParticipantCount(newRoom);
+        updateRemoteParticipants(newRoom);
+      });
+
+      newRoom.on(RoomEvent.Disconnected, (reason) => {
+        if (!mountedRef.current || roomRef.current !== newRoom) return; // intentional leave / superseded
         setIsConnected(false);
-        setStatus('Disconnected');
+        setParticipantTracks({});
+        setRemoteParticipants([]);
+        if (reason === DisconnectReason.ROOM_DELETED) {
+          setStatus('Stream ended');
+          setError(null);
+        } else if (reason === DisconnectReason.PARTICIPANT_REMOVED) {
+          setStatus('Removed');
+          setError('You were removed from this stream.');
+        } else if (reason === DisconnectReason.DUPLICATE_IDENTITY) {
+          setStatus('Disconnected');
+          setError('You joined this stream from another tab or device.');
+        } else if (reason !== DisconnectReason.CLIENT_INITIATED) {
+          scheduleReconnect();
+        } else {
+          setStatus('Disconnected');
+        }
       });
 
       newRoom.on(RoomEvent.ParticipantConnected, (participant) => {
-        console.log('=== Participant Connected ===');
-        console.log('Identity:', participant.identity, 'name:', participant.name);
-        console.log('Track publications:', participant.trackPublications.size);
-        participant.trackPublications.forEach((pub, sid) => {
-          console.log('  Publication:', sid, 'kind:', pub.kind, 'trackSid:', pub.trackSid, 'subscribed:', pub.isSubscribed, 'track:', !!pub.track);
-        });
         updateParticipantCount(newRoom);
         updateRemoteParticipants(newRoom);
       });
 
       newRoom.on(RoomEvent.ParticipantDisconnected, (participant) => {
-        console.log('Participant disconnected:', participant.identity, 'name:', participant.name);
+        setParticipantTracks((prev) => {
+          const next = { ...prev };
+          delete next[participant.identity];
+          return next;
+        });
         updateParticipantCount(newRoom);
         updateRemoteParticipants(newRoom);
       });
@@ -313,10 +355,20 @@ const Viewer = () => {
         }
       });
 
+      roomRef.current = newRoom;
       await newRoom.connect(liveKitURL, tokenResult.token);
+      if (!mountedRef.current) {
+        newRoom.removeAllListeners();
+        newRoom.disconnect();
+        return;
+      }
       setRoom(newRoom);
     } catch (err) {
-      console.error('Connection error:', err);
+      console.error('Connection error:', err.message);
+      if (!mountedRef.current) return;
+      const failed = roomRef.current;
+      roomRef.current = null;
+      failed?.removeAllListeners();
       setError(err.message);
       setStatus('Connection Failed');
     }
@@ -346,10 +398,14 @@ const Viewer = () => {
   };
 
   const cleanup = async () => {
-    if (room) {
-      await room.disconnect();
-      setRoom(null);
+    clearTimeout(retryRef.current.timer);
+    const r = roomRef.current;
+    roomRef.current = null;
+    if (r) {
+      r.removeAllListeners();
+      await r.disconnect();
     }
+    setRoom(null);
     setIsConnected(false);
     setRemoteParticipants([]);
     setParticipantTracks({});
