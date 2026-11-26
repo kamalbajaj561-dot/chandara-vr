@@ -1,9 +1,10 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { getEvent } from '../services/eventService';
-import { hasPurchasedTicket } from '../services/ticketService';
-import { Send, Users, Eye, MessageSquare, Glasses } from 'lucide-react';
+import { hasEventAccess } from '../services/entitlement';
+import ChatPanel from '../components/ChatPanel';
+import { Eye, Glasses } from 'lucide-react';
 import { formatDateTime } from '../utils/formatDate';
 
 const Watch = () => {
@@ -13,28 +14,10 @@ const Watch = () => {
   const [event, setEvent] = useState(null);
   const [hasPurchased, setHasPurchased] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [viewerCount, setViewerCount] = useState(0);
-  const [chatMessages, setChatMessages] = useState([]);
-  const [message, setMessage] = useState('');
-  const chatEndRef = useRef(null);
 
   useEffect(() => {
     loadEventData();
-    // Simulate viewer count updates
-    const viewerInterval = setInterval(() => {
-      setViewerCount(prev => Math.max(0, prev + Math.floor(Math.random() * 5) - 2));
-    }, 5000);
-    setViewerCount(Math.floor(Math.random() * 100) + 50);
-
-    return () => clearInterval(viewerInterval);
   }, [id, user]);
-
-  useEffect(() => {
-    // Scroll to bottom of chat when new messages arrive
-    if (chatEndRef.current) {
-      chatEndRef.current.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [chatMessages]);
 
   const loadEventData = async () => {
     try {
@@ -42,12 +25,12 @@ const Watch = () => {
       if (eventResult.success) {
         setEvent(eventResult.event);
 
-        // Check if user has purchased ticket
-        if (user) {
-          const purchaseResult = await hasPurchasedTicket(id, user.uid);
-          if (purchaseResult.success) {
-            setHasPurchased(purchaseResult.hasPurchased);
-          }
+        // Entitlement is decided from backend-issued tickets (owners and admins always have access).
+        const privileged = user && (user.role === 'admin' || eventResult.event.ownerId === user.uid);
+        try {
+          setHasPurchased(privileged || (await hasEventAccess(eventResult.event, id, user)));
+        } catch (e) {
+          console.warn('Could not verify ticket:', e.message);
         }
       }
       setLoading(false);
@@ -55,21 +38,6 @@ const Watch = () => {
       console.error('Error loading event:', error);
       setLoading(false);
     }
-  };
-
-  const handleSendMessage = (e) => {
-    e.preventDefault();
-    if (!message.trim() || !user) return;
-
-    const newMessage = {
-      id: Date.now(),
-      user: user.name,
-      message: message,
-      timestamp: new Date()
-    };
-
-    setChatMessages([...chatMessages, newMessage]);
-    setMessage('');
   };
 
   const handleVRView = () => {
@@ -163,10 +131,6 @@ const Watch = () => {
                     <h2 className="text-xl font-bold text-white mb-2">{event.title}</h2>
                     <p className="text-gray-400">{event.city}, {event.country}</p>
                   </div>
-                  <div className="flex items-center gap-2 text-gray-400">
-                    <Users className="w-5 h-5" />
-                    <span>{viewerCount} viewers</span>
-                  </div>
                 </div>
               </div>
             </div>
@@ -174,46 +138,11 @@ const Watch = () => {
 
           {/* Chat */}
           <div className="lg:col-span-1">
-            <div className="card h-[calc(100vh-200px)] flex flex-col">
-              <div className="p-4 border-b border-gray-800 flex items-center gap-2">
-                <MessageSquare className="w-5 h-5 text-gold" />
-                <h3 className="font-semibold text-white">Live Chat</h3>
-              </div>
-
-              <div className="flex-1 overflow-y-auto p-4 space-y-3">
-                {chatMessages.length === 0 ? (
-                  <p className="text-gray-500 text-center text-sm">No messages yet</p>
-                ) : (
-                  chatMessages.map(msg => (
-                    <div key={msg.id} className="text-sm">
-                      <span className="text-gold font-semibold">{msg.user}: </span>
-                      <span className="text-gray-300">{msg.message}</span>
-                    </div>
-                  ))
-                )}
-                <div ref={chatEndRef} />
-              </div>
-
-              <div className="p-4 border-t border-gray-800">
-                <form onSubmit={handleSendMessage} className="flex gap-2">
-                  <input
-                    type="text"
-                    value={message}
-                    onChange={(e) => setMessage(e.target.value)}
-                    placeholder={user ? "Type a message..." : "Sign in to chat"}
-                    disabled={!user}
-                    className="flex-1 bg-darkerBlue border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-gold disabled:opacity-50"
-                  />
-                  <button
-                    type="submit"
-                    disabled={!user || !message.trim()}
-                    className="bg-gold text-black px-3 py-2 rounded-lg hover:bg-goldLight transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <Send className="w-4 h-4" />
-                  </button>
-                </form>
-              </div>
-            </div>
+            <ChatPanel
+              eventId={id}
+              user={user}
+              canModerate={Boolean(user) && (user.role === 'admin' || event.ownerId === user.uid)}
+            />
           </div>
         </div>
       </div>

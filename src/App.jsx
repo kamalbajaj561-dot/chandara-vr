@@ -18,6 +18,7 @@ import ForgotPassword from './pages/ForgotPassword';
 import Events from './pages/Events';
 import Profile from './pages/Profile';
 import Orders from './pages/Orders';
+import Notifications from './pages/Notifications';
 import CheckoutStatus from './pages/CheckoutStatus';
 
 function AppRoutes() {
@@ -106,6 +107,7 @@ function AppRoutes() {
       {/* Events listing */}
       <Route path="/events" element={<><Navbar /><Events /></>} />
       <Route path="/forgot-password" element={<PublicRoute><ForgotPassword /></PublicRoute>} />
+      <Route path="/notifications" element={<ProtectedRoute><Navbar /><Notifications /></ProtectedRoute>} />
       <Route path="/orders" element={<ProtectedRoute><Navbar /><Orders /></ProtectedRoute>} />
       <Route path="/checkout/status" element={<ProtectedRoute><Navbar /><CheckoutStatus /></ProtectedRoute>} />
       <Route path="/profile" element={<ProtectedRoute><Navbar /><Profile /></ProtectedRoute>} />

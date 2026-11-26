@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { getEvent } from '../services/eventService';
-import { hasPurchasedTicket } from '../services/ticketService';
+import { hasEventAccess } from '../services/entitlement';
 import { Eye, Monitor, X } from 'lucide-react';
 
 const VRViewer = () => {
@@ -24,12 +24,11 @@ const VRViewer = () => {
       if (eventResult.success) {
         setEvent(eventResult.event);
 
-        // Check if user has purchased ticket
-        if (user) {
-          const purchaseResult = await hasPurchasedTicket(id, user.uid);
-          if (purchaseResult.success) {
-            setHasPurchased(purchaseResult.hasPurchased);
-          }
+        const privileged = user && (user.role === 'admin' || eventResult.event.ownerId === user.uid);
+        try {
+          setHasPurchased(privileged || (await hasEventAccess(eventResult.event, id, user)));
+        } catch (e) {
+          console.warn('Could not verify ticket:', e.message);
         }
       }
       setLoading(false);

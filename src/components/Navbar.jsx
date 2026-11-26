@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom';
+import NotificationBell from './NotificationBell';
 import { useAuth } from '../context/AuthContext';
 import { Menu, X, User, LogOut } from 'lucide-react';
 import { useState } from 'react';
@@ -33,6 +34,7 @@ const Navbar = () => {
                 >
                   Dashboard
                 </Link>
+                <NotificationBell />
                 <Link to="/orders" className="text-gray-300 hover:text-gold transition-colors">
                   Orders
                 </Link>
