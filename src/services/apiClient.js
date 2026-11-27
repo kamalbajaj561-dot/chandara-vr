@@ -40,5 +40,7 @@ export async function apiRequest(path, { method = 'GET', body, idempotencyKey } 
   if (!response.ok || payload?.success === false) {
     throw new ApiError(payload?.error || payload?.message || `Request failed (${response.status})`, response.status);
   }
-  return payload?.data;
+  // Most endpoints wrap results as { success, data }; admin endpoints return the body directly.
+  if (payload && typeof payload === 'object' && 'data' in payload) return payload.data;
+  return payload ?? undefined;
 }
