@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { MessageSquare, Send, Trash2, VolumeX } from 'lucide-react';
 import { getMessages, sendMessage, deleteMessage, muteUser } from '../services/chatService';
+import { connectChatSocket } from '../services/chatSocket';
 
-const POLL_MS = 4000;
+const FALLBACK_POLL_MS = 5000; // only used while the real-time connection is down
 const MAX_LEN = 500;
 
 const toMillis = (v) => {
@@ -21,7 +22,15 @@ const ChatPanel = ({ eventId, user, canModerate = false }) => {
   const [loadError, setLoadError] = useState('');
   const [actionError, setActionError] = useState('');
   const [sending, setSending] = useState(false);
+  const [connection, setConnection] = useState('connecting'); // connecting | live | reconnecting | offline | denied
+  const [notice, setNotice] = useState('');
+  const connectionRef = useRef('connecting');
   const endRef = useRef(null);
+
+  const setConn = (c) => {
+    connectionRef.current = c;
+    setConnection(c);
+  };
 
   const load = useCallback(async () => {
     try {
@@ -38,17 +47,52 @@ const ChatPanel = ({ eventId, user, canModerate = false }) => {
     }
   }, [eventId]);
 
+  const msgId = (m) => m.id || m.messageId;
+
+  // History over REST, live updates over the socket (server-authorized), REST polling only as a fallback.
   useEffect(() => {
     if (!user) {
       setLoading(false);
       return undefined;
     }
     load();
+    const conn = connectChatSocket(eventId, {
+      onJoined: () => {
+        setConn('live');
+        load(); // catch up on anything missed while disconnected
+      },
+      onDenied: (reason) => {
+        setConn('denied');
+        setNotice(reason);
+      },
+      onDisconnected: () => setConn('reconnecting'),
+      onReconnecting: () => setConn('reconnecting'),
+      onError: () => setConn(connectionRef.current === 'live' ? 'reconnecting' : 'offline'),
+      onMessage: (m) =>
+        setMessages((prev) => (prev.some((x) => msgId(x) === msgId(m)) ? prev : [...prev, m])),
+      onMessageUpdated: (m) => setMessages((prev) => prev.map((x) => (msgId(x) === msgId(m) ? { ...x, ...m } : x))),
+      onMessageRemoved: ({ messageId }) => setMessages((prev) => prev.filter((x) => msgId(x) !== messageId)),
+      onMuteChanged: ({ userId, muted }) => {
+        if (userId === user.uid) setNotice(muted ? 'You have been muted by a moderator.' : 'You can chat again.');
+      },
+      onTimeout: ({ userId }) => {
+        if (userId === user.uid) setNotice('You have been timed out by a moderator.');
+      },
+      onBanChanged: ({ userId, banned }) => {
+        if (userId === user.uid && banned) {
+          setNotice('You have been removed from this chat.');
+          setConn('denied');
+        }
+      },
+    });
     const timer = setInterval(() => {
-      if (!document.hidden) load();
-    }, POLL_MS);
-    return () => clearInterval(timer);
-  }, [user, load]);
+      if (!document.hidden && connectionRef.current !== 'live' && connectionRef.current !== 'denied') load();
+    }, FALLBACK_POLL_MS);
+    return () => {
+      clearInterval(timer);
+      conn.close();
+    };
+  }, [user, eventId, load]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView?.({ behavior: 'smooth' });
@@ -96,6 +140,15 @@ const ChatPanel = ({ eventId, user, canModerate = false }) => {
       <div className="p-4 border-b border-gray-800 flex items-center gap-2">
         <MessageSquare className="w-5 h-5 text-gold" aria-hidden="true" />
         <h3 className="font-semibold text-white">Live Chat</h3>
+        {user && (
+          <span
+            role="status"
+            data-testid="chat-connection"
+            className={`ml-auto text-xs ${connection === 'live' ? 'text-green-400' : connection === 'denied' ? 'text-red-400' : 'text-yellow-400'}`}
+          >
+            {{ live: 'Live', connecting: 'Connecting...', reconnecting: 'Reconnecting...', offline: 'Offline - refreshing', denied: 'Chat unavailable' }[connection]}
+          </span>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-3" aria-live="polite">
@@ -134,6 +187,7 @@ const ChatPanel = ({ eventId, user, canModerate = false }) => {
         <div ref={endRef} />
       </div>
 
+      {notice && <p role="status" className="px-4 pb-2 text-xs text-yellow-400">{notice}</p>}
       {actionError && <p role="status" className="px-4 pb-2 text-xs text-yellow-400">{actionError}</p>}
 
       <div className="p-4 border-t border-gray-800">
@@ -151,7 +205,7 @@ const ChatPanel = ({ eventId, user, canModerate = false }) => {
           <button
             type="submit"
             aria-label="Send message"
-            disabled={!user || !text.trim() || sending}
+            disabled={!user || !text.trim() || sending || connection === 'denied'}
             className="bg-gold text-black px-3 py-2 rounded-lg hover:bg-goldLight transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Send className="w-4 h-4" />

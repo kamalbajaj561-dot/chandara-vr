@@ -1,10 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ChatPanel from './ChatPanel';
 import * as chat from '../services/chatService';
+import { connectChatSocket } from '../services/chatSocket';
 
 vi.mock('../services/chatService');
+vi.mock('../services/chatSocket', () => ({ connectChatSocket: vi.fn() }));
+
+let handlers;
+const close = vi.fn();
 
 const msgs = [
   { id: 'm2', senderId: 'u2', senderName: 'Bea', message: 'second', createdAt: '2026-01-01T10:00:02Z' },
@@ -14,7 +19,11 @@ const msgs = [
 const me = { uid: 'me', name: 'Me' };
 
 describe('ChatPanel', () => {
-  beforeEach(() => { vi.clearAllMocks(); chat.getMessages.mockResolvedValue(msgs); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    chat.getMessages.mockResolvedValue(msgs);
+    connectChatSocket.mockImplementation((eventId, h) => { handlers = h; return { close }; });
+  });
 
   it('asks anonymous users to sign in and does not call the API', () => {
     render(<ChatPanel eventId="e1" user={null} />);
@@ -80,5 +89,58 @@ describe('ChatPanel', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Delete message from Al' }));
     await waitFor(() => expect(chat.deleteMessage).toHaveBeenCalledWith('m1'));
     await waitFor(() => expect(screen.queryByText('first')).not.toBeInTheDocument());
+  });
+
+  describe('real-time', () => {
+    it('connects once per event and closes on unmount', async () => {
+      const { unmount } = render(<ChatPanel eventId="e1" user={me} />);
+      await screen.findByText('first');
+      expect(connectChatSocket).toHaveBeenCalledWith('e1', expect.any(Object));
+      unmount();
+      expect(close).toHaveBeenCalled();
+    });
+
+    it('does not open a socket for anonymous users', () => {
+      render(<ChatPanel eventId="e1" user={null} />);
+      expect(connectChatSocket).not.toHaveBeenCalled();
+    });
+
+    it('shows live messages instantly and ignores duplicates (REST + socket echo)', async () => {
+      render(<ChatPanel eventId="e1" user={me} />);
+      await screen.findByText('first');
+      act(() => handlers.onMessage({ id: 'm9', senderId: 'u5', senderName: 'Cy', message: 'live one', createdAt: '2026-01-01T10:01:00Z' }));
+      act(() => handlers.onMessage({ id: 'm9', senderId: 'u5', senderName: 'Cy', message: 'live one', createdAt: '2026-01-01T10:01:00Z' }));
+      expect(screen.getAllByText('live one')).toHaveLength(1);
+    });
+
+    it('removes messages deleted by a moderator in real time', async () => {
+      render(<ChatPanel eventId="e1" user={me} />);
+      await screen.findByText('first');
+      act(() => handlers.onMessageRemoved({ messageId: 'm1' }));
+      expect(screen.queryByText('first')).not.toBeInTheDocument();
+    });
+
+    it('reflects connection state', async () => {
+      render(<ChatPanel eventId="e1" user={me} />);
+      await screen.findByText('first');
+      expect(screen.getByTestId('chat-connection')).toHaveTextContent('Connecting...');
+      act(() => handlers.onJoined());
+      expect(screen.getByTestId('chat-connection')).toHaveTextContent('Live');
+      act(() => handlers.onDisconnected('transport close'));
+      expect(screen.getByTestId('chat-connection')).toHaveTextContent('Reconnecting...');
+    });
+
+    it('tells the user when muted and when the server denies the chat (no ticket)', async () => {
+      render(<ChatPanel eventId="e1" user={me} />);
+      await screen.findByText('first');
+      act(() => handlers.onMuteChanged({ userId: 'someone-else', muted: true }));
+      expect(screen.queryByText(/muted by a moderator/i)).not.toBeInTheDocument();
+      act(() => handlers.onMuteChanged({ userId: 'me', muted: true }));
+      expect(screen.getByText(/muted by a moderator/i)).toBeInTheDocument();
+      act(() => handlers.onDenied('A valid ticket is required to watch this event'));
+      expect(screen.getByText(/valid ticket is required/i)).toBeInTheDocument();
+      expect(screen.getByTestId('chat-connection')).toHaveTextContent('Chat unavailable');
+      expect(screen.getByRole('button', { name: /send message/i })).toBeDisabled();
+    });
   });
 });
